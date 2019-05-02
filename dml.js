@@ -24,7 +24,7 @@ module.exports = function(RED) {
         .authenticate(orgResult.connection, orgResult.config)
         .then((oauth) => {
           let dmlResult;
-          const org = orgResult.org;
+          const org = orgResult.connection;
           switch (theAction) {
             case 'insert':
               dmlResult = org.insert(payload);
