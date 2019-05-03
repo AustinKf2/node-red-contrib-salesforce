@@ -2,14 +2,14 @@ module.exports = function(RED) {
     const nforce = require('./nforce_wrapper');
     //array to back-up the node & disconnect the streaming client when redeploying flow
     const clients = {};
+
     function Streaming(config) {
         const node = this;
         RED.nodes.createNode(node, config);
         node.connection = RED.nodes.getNode(config.connection);
         node.subscriptionActive = false;
         node.client = {}; // The client
-
-        // back-up the node and disconnect/clean-up when redeploying flow to avoid duplicated subscription 
+        // back-up the node and disconnect/clean-up when redeploying flow to avoid duplicated subscription
         if(!clients[node.id]){
             clients[node.id] = node;
         }else{
@@ -18,68 +18,74 @@ module.exports = function(RED) {
                 clients[node.id] = node;
             }
         }
-        
-        node.status({ fill: 'gray', shape: 'ring', text: 'idle' });
 
+        node.status({ fill: 'gray', shape: 'ring', text: 'idle' });
+        this.send('msg');
         this.on('input', function(msg) {
+            //pMsg = msg;
             const action = msg.action || 'subscribe';
             if(!node.subscriptionActive){
                 if (action === 'subscribe') {
                     // create connection object
                     node.status({ fill: 'blue', shape: 'ring', text: 'connecting....' });
-                    debugger;
-                    const org = nforce.createConnection(node.connection, msg);
-                    nforce.authenticate(org, node.connection, msg, function(err, oauth) {
-                        let lastReplayId = -1;
-                        if (err) {
-                            node.status({ fill: 'red', shape: 'dot', text: 'Error:' + err.message });
-                            return node.error(err, err.message);
+                    //debugger;
+                    const orgResult  = nforce.createConnection(node.connection, msg);
+                    const org        = orgResult.connection;
+                    const resultProm = nforce.authenticate(org, node.connection);
+
+                    function doWork(text, data) {
+                      var lastReplayId = -1;
+
+                      const opts = {};
+                      const topicType = msg.topicType || config.topicType;
+                      if (topicType === 'platform') {
+                          opts.isEvent = true;
+                      } else if (topicType === 'generic') {
+                          opts.isSystem = true;
+                      }
+                      // Topic in message takes priority over configuration
+                      opts.topic = msg.topic || config.pushTopic;
+                      const subscriptionMessage = 'Subscription on ' + topicType + ' to:' + opts.topic;
+                      try {
+                          var stream;
+
+                              node.client = org.createStreamClient();
+                              opts.replayId = lastReplayId;
+                              stream = node.client.subscribe(opts);
+                              node.log(subscriptionMessage);
+                              node.status({ fill: 'blue', shape: 'dot', text: subscriptionMessage });
+                              node.subscriptionActive = true;
+                              stream.on('error', function(err) {
+                                  node.log('Subscription error!!!');
+                                  node.status({ fill: 'red', shape: 'dot', text: 'Error:' + err.message });
+                                  node.log(err, msg);
+                                  node.client.disconnect();
+                                  node.subscriptionActive = false;
+                                  return node.error(err, err.message);
+                              });
+                          } catch (ex) {
+                              node.status({ fill: 'red', shape: 'dot', text: 'Error:' + ex.message });
+                              return node.error(ex, ex.message);
+                          }
+
+                          stream.on('data', function(data) {
+
+                              if(lastReplayId == data.event.replayId){
+                                  return;
+                              }
+
+                              lastReplayId = data.event.replayId;
+
+                              node.status({ fill: 'green', shape: 'dot', text: 'Receiving data' });
+                              node.send({
+                                  payload: data
+                              });
+                              node.status({ fill: 'blue', shape: 'dot', text: subscriptionMessage });
+                          });
                         }
-                        const opts = {};
-                        const topicType = msg.topicType || config.topicType;
-                        if (topicType === 'platform') {
-                            opts.isEvent = true;
-                        } else if (topicType === 'generic') {
-                            opts.isSystem = true;
-                        }
-                        // Topic in message takes priority over configuration
-                        opts.topic = msg.topic || config.pushTopic;
-                        const subscriptionMessage = 'Subscription on ' + topicType + ' to:' + opts.topic;
-    
-                        var stream;
-                        try {
-                            node.client = org.createStreamClient();
-                            stream = node.client.subscribe(opts);
-                            node.log(subscriptionMessage);
-                            node.status({ fill: 'blue', shape: 'dot', text: subscriptionMessage });
-                            node.subscriptionActive = true;
-                            stream.on('error', function(err) {
-                                node.log('Subscription error!!!');
-                                node.status({ fill: 'red', shape: 'dot', text: 'Error:' + err.message });
-                                node.log(err, msg);
-                                node.client.disconnect();
-                                node.subscriptionActive = false;
-                                return node.error(err, err.message);
-                            });
-                        } catch (ex) {
-                            node.status({ fill: 'red', shape: 'dot', text: 'Error:' + ex.message });
-                            return node.error(ex, ex.message);
-                        }
-    
-                        stream.on('data', function(data) {
-                            
-                            if(lastReplayId == data.event.replayId){
-                                return;
-                            }
-    
-                            lastReplayId = data.event.replayId;
-                            
-                            node.status({ fill: 'green', shape: 'dot', text: 'Receiving data' });
-                            node.send({
-                                payload: data
-                            });
-                            node.status({ fill: 'blue', shape: 'dot', text: subscriptionMessage });
-                        });
+
+                    resultProm.then( doWork.bind(null, null) ).catch(err => {
+                      nforce.error(node, msg, err)
                     });
                 }
 
@@ -91,6 +97,9 @@ module.exports = function(RED) {
                     node.subscriptionActive = false;
                 }
             }
+        },
+        (err) =>{
+          console.log(err);
         });
     }
 
